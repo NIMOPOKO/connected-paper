@@ -1,0 +1,8 @@
+venv/
+__pycache__/
+*.db
+lib/
+cp.py
+cp2.py
+similarity_network.html
+top10_centered.html
