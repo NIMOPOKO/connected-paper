@@ -1,6 +1,5 @@
 venv/
 __pycache__/
-*.db
 lib/
 cp.py
 cp2.py
