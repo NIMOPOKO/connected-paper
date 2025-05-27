@@ -238,6 +238,47 @@ with st.sidebar:
         db.close()
     else:
         st.info('編集可能なノードがありません。')
+    st.markdown('---')
+    st.header('ノード削除')
+    nodes = list(st.session_state.G.nodes(data=True))
+    if nodes:
+        # ノードID → ラベル のマッピング
+        id2label = {nid: attrs['label'] for nid, attrs in nodes}
+        # 削除対象選択
+        del_sel = st.selectbox(
+            '削除するノード',
+            list(id2label.keys()),
+            format_func=lambda x: id2label[x],
+            key='del_node'
+        )
+        if st.button('削除', key='btn_node_del'):
+            # 1) グラフから削除
+            st.session_state.G.remove_node(del_sel)
+
+            # 2) DBから削除（関連するEdgeも同時に削除）
+            db = SessionLocal()
+            # Edge の source または target に含まれるものを先に消す
+            db.query(Edge).filter(
+                Edge.user_id   == st.session_state.user_id,
+                Edge.source_id == del_sel
+            ).delete(synchronize_session=False)
+            db.query(Edge).filter(
+                Edge.user_id   == st.session_state.user_id,
+                Edge.target_id == del_sel
+            ).delete(synchronize_session=False)
+
+            # Node を削除
+            db.query(Node).filter(
+                Node.user_id    == st.session_state.user_id,
+                Node.openalex_id == del_sel
+            ).delete(synchronize_session=False)
+
+            db.commit()
+            db.close()
+
+            st.success(f"ノード '{id2label[del_sel]}' を削除しました。")
+    else:
+        st.info('削除できるノードがありません。')
 
 # --- グラフ可視化 ---
 st.subheader('論文引用グラフ')
