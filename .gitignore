@@ -5,3 +5,6 @@ cp.py
 cp2.py
 similarity_network.html
 top10_centered.html
+dist/
+build/
+run_app.spec
