@@ -8,3 +8,5 @@ top10_centered.html
 dist/
 build/
 run_app.spec
+launcher.py
+open_browser.py
