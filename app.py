@@ -6,9 +6,10 @@ import networkx as nx
 from pyvis.network import Network
 import requests
 from requests.adapters import HTTPAdapter, Retry
-from db import init_db, SessionLocal, User, Node, Edge
+from db import init_db, SessionLocal, User, Topic, Node, Edge
 from auth_utils import verify_password
 import streamlit.components.v1 as components
+import sqlalchemy
 # ①必ず最初に
 st.set_page_config(page_title='論文グラフ (Admin)', layout='wide')
 
@@ -59,19 +60,122 @@ def do_logout():
 
 # ── グラフ初期化 ──
 def load_graph():
+    # セッションに G がなければ初回作成
     if 'G' not in st.session_state:
         st.session_state.G = nx.DiGraph()
+
+    # フラグが False（＝ロードが必要）なら新規ロード
     if not st.session_state.get('G_loaded', False):
+        # まっさらにする
+        st.session_state.G = nx.DiGraph()
+
         db = SessionLocal()
-        for n in db.query(Node).filter(Node.user_id == st.session_state.user_id):
-            st.session_state.G.add_node(n.openalex_id, label=n.label, title=n.title, link=n.link)
-        for e in db.query(Edge).filter(Edge.user_id == st.session_state.user_id):
-            st.session_state.G.add_edge(e.source_id, e.target_id)
+        uid = st.session_state.user_id
+        tid = st.session_state.current_topic_id
+
+        # Topic 未選択なら何もしない
+        if tid is not None:
+            # ノードだけ該当トピック分ロード
+            for n in db.query(Node).filter(Node.user_id==uid, Node.topic_id==tid):
+                st.session_state.G.add_node(
+                    n.openalex_id,
+                    label=n.label,
+                    title=n.title,
+                    link=n.link
+                )
+            # エッジも同じく
+            for e in db.query(Edge).filter(Edge.user_id==uid, Edge.topic_id==tid):
+                st.session_state.G.add_edge(e.source_id, e.target_id)
+
         db.close()
+
+        # 二度とロードしないようフラグを立てる
         st.session_state.G_loaded = True
+
+def load_topics():
+    db = SessionLocal()
+    # (Topic.id, Topic.name) のタプルを取得
+    rows = db.query(Topic.id, Topic.name) \
+             .filter(Topic.user_id == st.session_state.user_id) \
+             .all()
+    db.close()
+    # rows は [(id1, name1), (id2, name2), …]
+    return rows
+
+def on_topic_change():
+    # トピックが変わったら必ず再ロード
+    st.session_state.G_loaded = False
 
 # ── サイドバー UI ──
 def sidebar_ui():
+    st.sidebar.header('トピック管理')
+
+    # ── ① トピック一覧を取得 ──
+    topics = load_topics()            # [(id, name), …]
+    topic_ids   = [tid for tid, _ in topics]
+    topic_names = {tid: name for tid, name in topics}
+
+    if not topics:
+        st.sidebar.info('トピックがまだありません。')
+        return
+
+    # ── selectbox 本体。index= は書かない ──
+    sel_tid = st.sidebar.selectbox(
+        '表示するトピック',
+        options=topic_ids,
+        format_func=lambda tid: topic_names[tid],
+    )
+
+    # ── ③ current_topic_id に反映 ──
+    if st.session_state.get('current_topic_id') != sel_tid:
+        st.session_state.current_topic_id = sel_tid
+        st.session_state.G_loaded = False
+
+    st.sidebar.markdown('---')
+
+    # ③ 新規トピック作成（重複チェック付き）
+    new_name = st.sidebar.text_input('＋ 新規トピック', key='new_topic')
+    if st.sidebar.button('作成', key='btn_new_topic') and new_name:
+        existing_names = [name for _, name in topics]
+        if new_name in existing_names:
+            st.sidebar.error('⚠ 同じ名前のトピックが既に存在します。')
+        else:
+            db = SessionLocal()
+            t = Topic(name=new_name, user_id=st.session_state.user_id)
+            db.add(t); db.commit()
+            new_tid = t.id
+            db.close()
+            # 作成後は選択状態にしてグラフを再ロード
+            st.session_state.current_topic_id = new_tid
+            st.session_state.G_loaded = False
+
+    st.sidebar.markdown('---')
+
+    # ④ トピック削除
+    if topics:
+        to_del = st.sidebar.selectbox(
+            '削除するトピック',
+            options=topics,
+            format_func=lambda x: x[1],
+            key='del_topic'
+        )
+        if st.sidebar.button('削除', key='btn_delete_topic'):
+            db = SessionLocal()
+            # User の所有物か確認しつつ削除
+            db.query(Topic) \
+              .filter(Topic.id == to_del[0],
+                      Topic.user_id == st.session_state.user_id) \
+              .delete()
+            db.commit()
+            db.close()
+            st.sidebar.success(f"トピック '{to_del[1]}' を削除しました。")
+            # セッション状態を更新
+            st.session_state.G_loaded = False
+            # 削除後のデフォルトトピック
+            remaining = [tid for tid, _ in topics if tid != to_del[0]]
+            st.session_state.current_topic_id = remaining[0] if remaining else None
+
+    st.sidebar.markdown('---')
     st.sidebar.header('論文検索とノード追加')
     query = st.sidebar.text_input('タイトルを入力して検索', key='query')
     if st.sidebar.button('検索', key='btn_search'):
@@ -85,7 +189,7 @@ def sidebar_ui():
                 meta = fetch_metadata(oid)
                 st.session_state.G.add_node(oid, label=meta['label'], title=meta['title'])
                 db = SessionLocal()
-                db.add(Node(openalex_id=oid, label=meta['label'], title=meta['title'], user_id=st.session_state.user_id))
+                db.add(Node(openalex_id=oid, label=meta['label'], title=meta['title'], user_id=st.session_state.user_id, topic_id=st.session_state.current_topic_id))
                 db.commit()
                 db.close()
                 st.sidebar.success(f"ノード '{meta['label']}' を追加しました。")
@@ -99,7 +203,7 @@ def sidebar_ui():
             for cited in fetch_references(citing):
                 if cited in st.session_state.G.nodes and not st.session_state.G.has_edge(cited, citing):
                     st.session_state.G.add_edge(cited, citing)
-                    db.add(Edge(source_id=cited, target_id=citing, user_id=st.session_state.user_id))
+                    db.add(Edge(source_id=cited, target_id=citing, user_id=st.session_state.user_id, topic_id=st.session_state.current_topic_id))
                     added += 1
         db.commit()
         db.close()
@@ -115,7 +219,7 @@ def sidebar_ui():
         if st.sidebar.button('追加', key='btn_manual_add'):
             st.session_state.G.add_edge(src, dst)
             db = SessionLocal()
-            db.add(Edge(source_id=src, target_id=dst, user_id=st.session_state.user_id))
+            db.add(Edge(source_id=src, target_id=dst, user_id=st.session_state.user_id, topic_id=st.session_state.current_topic_id))
             db.commit()
             db.close()
             st.sidebar.success(f"'{id2label[src]}' → '{id2label[dst]}' を追加しました。")
@@ -209,17 +313,23 @@ def show_graph():
 # ── エントリポイント ──
 def main():
     init_db()
-    # 認証初期化
-    if 'logged_in' not in st.session_state:
-        st.session_state.logged_in = False
-        st.session_state.user_id = None
 
-    # サイドバー：ログイン／ログアウト
+    # ── セッションステートの初期化（1回だけ） ──
+    if 'G_loaded' not in st.session_state:
+        st.session_state.update({
+            'logged_in':         False,
+            'user_id':           None,
+            'current_topic_id':  None,
+            'G':                 nx.DiGraph(),
+            'G_loaded':          False,
+        })
+
+    # ── サイドバー：ログイン／ログアウト ──
     with st.sidebar:
         if not st.session_state.logged_in:
             st.header("ログイン (管理者のみ)")
             st.text_input("ユーザー名", key='login_user')
-            st.text_input("パスワード", type="password", key='login_pass')
+            st.text_input("パスワード",   type="password", key='login_pass')
             st.button("ログイン", on_click=do_login)
             if 'login_user' in st.session_state and not st.session_state.logged_in:
                 st.error("認証に失敗しました。管理者権限を確認してください。")
@@ -230,14 +340,20 @@ def main():
             st.markdown(f"**ログイン中:** {user.username}")
             st.button("ログアウト", on_click=do_logout)
 
+    # ── 未ログインならここで中断 ──
     if not st.session_state.logged_in:
         st.stop()
 
-    # グラフロード＆サイドバー機能
+    # ── トピックに応じてグラフをロード ──
     load_graph()
+
+    # ── トピック選択などサイドバー UI ──
     sidebar_ui()
 
-    # メイン表示
+    # ③ 二度目のロード：トピック切り替えでフラグが False なら、ここで新しいトピックを読み込む
+    load_graph()
+
+    # ── グラフ表示 ──
     show_graph()
 
 

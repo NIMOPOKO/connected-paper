@@ -23,6 +23,17 @@ class User(Base):
     nodes = relationship('Node', back_populates='user', cascade='all, delete-orphan')
     edges = relationship('Edge', back_populates='user', cascade='all, delete-orphan')
     sessions = relationship('SessionToken', back_populates='user', cascade='all, delete-orphan')
+    topics = relationship('Topic', back_populates='user', cascade='all, delete-orphan')
+
+class Topic(Base):
+    __tablename__ = "topics"
+    id      = Column(Integer, primary_key=True, index=True)
+    name    = Column(String, nullable=False)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    user    = relationship('User',    back_populates='topics')
+    nodes   = relationship('Node',    back_populates='topic',  cascade='all, delete-orphan')
+    edges   = relationship('Edge',    back_populates='topic',  cascade='all, delete-orphan')
+
 
 class Node(Base):
     __tablename__ = 'nodes'
@@ -35,6 +46,8 @@ class Node(Base):
     memo = Column(String, nullable=True)
     user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
     user = relationship('User', back_populates='nodes')
+    topic_id = Column(Integer, ForeignKey('topics.id'), nullable=False)
+    topic    = relationship('Topic', back_populates='nodes')
 
 class Edge(Base):
     __tablename__ = 'edges'
@@ -43,6 +56,8 @@ class Edge(Base):
     target_id = Column(String, nullable=False)
     user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
     user = relationship('User', back_populates='edges')
+    topic_id = Column(Integer, ForeignKey('topics.id'), nullable=False)
+    topic    = relationship('Topic', back_populates='edges')
 
 class SessionToken(Base):
     __tablename__ = 'session_tokens'
